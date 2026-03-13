@@ -1,0 +1,991 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>AFL Data Collector</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #111;
+            color: #eee;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            min-height: 100vh;
+            width: 100vw;
+        }
+        body.no-scroll {
+            overflow: hidden;
+            height: 100vh;
+        }
+
+        /* --- Setup Screen --- */
+        #setup-screen {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 30px 20px 60px;
+            text-align: center;
+            min-height: 100vh;
+            overflow-y: auto;
+            -webkit-overflow-scrolling: touch;
+        }
+        #setup-screen h1 { font-size: 1.5em; margin-bottom: 10px; }
+        #setup-screen .subtitle { color: #aaa; font-size: 0.9em; margin-bottom: 25px; }
+
+        .option-group {
+            width: 100%;
+            max-width: 400px;
+            margin-bottom: 15px;
+            text-align: left;
+        }
+        .option-group label {
+            display: block;
+            font-size: 0.85em;
+            color: #999;
+            margin-bottom: 5px;
+        }
+        .option-group select, .option-group input {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #444;
+            border-radius: 8px;
+            background: #222;
+            color: #eee;
+            font-size: 1em;
+        }
+
+        .btn {
+            padding: 14px 40px;
+            border: none;
+            border-radius: 12px;
+            font-size: 1.1em;
+            font-weight: 600;
+            cursor: pointer;
+            margin: 8px;
+            transition: all 0.2s;
+        }
+        .btn-primary { background: #2563eb; color: white; }
+        .btn-primary:hover { background: #1d4ed8; }
+        .btn-danger { background: #dc2626; color: white; }
+        .btn-success { background: #16a34a; color: white; }
+        .btn-secondary { background: #444; color: white; }
+        .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+        #camera-caps {
+            margin-top: 15px;
+            padding: 12px;
+            background: #1a1a2e;
+            border-radius: 8px;
+            font-size: 0.8em;
+            text-align: left;
+            max-width: 400px;
+            width: 100%;
+        }
+        .cap-ok { color: #4ade80; }
+        .cap-no { color: #f87171; }
+
+        /* --- Collection Screen --- */
+        #collect-screen { display: none; height: 100vh; position: relative; }
+
+        #video-container {
+            position: relative;
+            width: 100%;
+            height: 60vh;
+            background: #000;
+        }
+        #camera-video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1);
+        }
+        #face-overlay {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+        }
+        #face-guide {
+            position: absolute;
+            border: 2px dashed rgba(255,255,255,0.5);
+            border-radius: 50%;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 55%;
+            height: 70%;
+        }
+
+        #controls-panel {
+            padding: 15px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+        }
+        #status-text {
+            font-size: 1.1em;
+            font-weight: 600;
+            text-align: center;
+        }
+        #session-info {
+            font-size: 0.8em;
+            color: #999;
+            text-align: center;
+        }
+        .btn-row { display: flex; gap: 10px; }
+
+        /* --- Flash Overlay (full screen) --- */
+        #flash-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1000;
+        }
+
+        /* --- AE/AWB indicator --- */
+        #ae-awb-status {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            padding: 6px 10px;
+            border-radius: 6px;
+            font-size: 0.75em;
+            z-index: 10;
+        }
+        .ae-locked { background: rgba(22,163,74,0.8); }
+        .ae-auto { background: rgba(220,38,38,0.8); }
+
+        /* --- Download Screen --- */
+        #download-screen {
+            display: none;
+            height: 100vh;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            text-align: center;
+        }
+        #download-screen h2 { margin-bottom: 15px; }
+        #collection-summary {
+            background: #1a1a2e;
+            padding: 15px;
+            border-radius: 10px;
+            margin: 15px 0;
+            text-align: left;
+            font-size: 0.9em;
+            max-width: 400px;
+            width: 100%;
+        }
+        #collection-summary div { margin-bottom: 4px; }
+    </style>
+</head>
+<body>
+    <!-- Setup Screen -->
+    <div id="setup-screen">
+        <h1>AFL Data Collector</h1>
+        <p class="subtitle">Active Flash Liveness — 모바일 데이터 수집</p>
+
+        <div class="option-group">
+            <label>수집 유형</label>
+            <select id="collect-type">
+                <option value="live">Live (실제 얼굴)</option>
+                <option value="screen_replay">Spoof: Screen Replay (화면 재생)</option>
+                <option value="print">Spoof: Print (인쇄물)</option>
+                <option value="mask_3d">Spoof: 3D Mask</option>
+            </select>
+        </div>
+
+        <div class="option-group">
+            <label>Flash 프레임 수</label>
+            <select id="flash-count">
+                <option value="3">3 (빠름, ~1s)</option>
+                <option value="4" selected>4 (기본, ~1.3s)</option>
+                <option value="5">5 (상세, ~1.7s)</option>
+            </select>
+        </div>
+
+        <div class="option-group">
+            <label>Flash 지속 시간 (ms)</label>
+            <select id="flash-duration">
+                <option value="100">100ms (AE 반응 최소화)</option>
+                <option value="150" selected>150ms (균형)</option>
+                <option value="200">200ms (밝은 반사)</option>
+                <option value="300">300ms (최대 신호)</option>
+            </select>
+        </div>
+
+        <div class="option-group">
+            <label>수집할 세션 수</label>
+            <input type="number" id="session-count" value="10" min="1" max="100">
+        </div>
+
+        <div class="option-group" id="ae-analysis-group">
+            <label style="display:flex;align-items:center;gap:8px;color:#eee;font-size:1em;">
+                <input type="checkbox" id="ae-analysis-mode" style="width:auto;">
+                AE/AWB 반응 분석 모드
+            </label>
+            <p style="font-size:0.78em;color:#888;margin-top:6px;line-height:1.4;">
+                Flash 시퀀스를 2회 실행합니다:<br>
+                <span style="color:#4ade80;">Pass 1</span> — AE/AWB 잠금 (반사 패턴 측정)<br>
+                <span style="color:#facc15;">Pass 2</span> — AE/AWB 해제 (카메라 자동 반응 측정)<br>
+                실제 얼굴 vs 화면 재생의 AE 반응 곡선 차이를 기록합니다.
+            </p>
+        </div>
+
+        <div id="camera-caps">
+            <div>카메라 기능 감지 중...</div>
+        </div>
+
+        <button class="btn btn-primary" id="btn-start" disabled>카메라 시작</button>
+    </div>
+
+    <!-- Collection Screen -->
+    <div id="collect-screen">
+        <div id="video-container">
+            <video id="camera-video" autoplay playsinline muted></video>
+            <div id="face-overlay">
+                <div id="face-guide"></div>
+            </div>
+            <div id="ae-awb-status" class="ae-auto">AE/AWB: 확인 중</div>
+        </div>
+
+        <div id="controls-panel">
+            <div id="status-text">준비됨 — 얼굴을 가이드 안에 맞추세요</div>
+            <div id="session-info">세션 0/0 | 유형: live</div>
+
+            <div class="btn-row">
+                <button class="btn btn-primary" id="btn-capture" onclick="startCapture()">
+                    Flash 캡처 시작
+                </button>
+                <button class="btn btn-danger" id="btn-stop" onclick="finishCollection()">
+                    수집 종료
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Flash Overlay -->
+    <div id="flash-overlay"></div>
+
+    <!-- Download Screen -->
+    <div id="download-screen">
+        <h2>수집 완료!</h2>
+        <div id="collection-summary"></div>
+        <div class="btn-row">
+            <button class="btn btn-success" onclick="downloadData()">데이터 다운로드 (ZIP)</button>
+            <button class="btn btn-secondary" onclick="location.reload()">새로 시작</button>
+        </div>
+    </div>
+
+    <!-- JSZip for client-side zip creation -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+
+    <script>
+    // ============================================================
+    // AFL Data Collector — Core Logic
+    // ============================================================
+
+    // --- Safe DOM helpers ---
+    function clearElement(el) {
+        while (el.firstChild) el.removeChild(el.firstChild);
+    }
+
+    function addCapLine(parent, text, ok) {
+        const div = document.createElement('div');
+        div.className = ok ? 'cap-ok' : 'cap-no';
+        div.textContent = text;
+        parent.appendChild(div);
+    }
+
+    function addSummaryLine(parent, label, value) {
+        const div = document.createElement('div');
+        const strong = document.createElement('strong');
+        strong.textContent = label + ': ';
+        div.appendChild(strong);
+        div.appendChild(document.createTextNode(value));
+        parent.appendChild(div);
+    }
+
+    // --- State ---
+    let videoStream = null;
+    let videoTrack = null;
+    let imageCapture = null;
+    let cameraCapabilities = {};
+    let aeLocked = false;
+    let awbLocked = false;
+    let collectedSessions = [];
+    let currentSessionIdx = 0;
+    let totalSessions = 10;
+    let collectType = 'live';
+    let flashCount = 4;
+    let flashDuration = 150;
+    let aeAnalysisMode = false;
+
+    // Perceptually distinct colors for skin reflection analysis
+    const SKIN_COLORS = [
+        [255, 0, 0],     // Red — subsurface scattering
+        [0, 255, 0],     // Green — hemoglobin absorption (rPPG)
+        [0, 0, 255],     // Blue — surface reflection
+    ];
+
+    const ALL_COLORS = [
+        ...SKIN_COLORS,
+        [255, 255, 0],   // Yellow
+        [0, 255, 255],   // Cyan
+        [255, 0, 255],   // Magenta
+        [255, 255, 255], // White
+    ];
+
+    // --- Camera Setup ---
+
+    async function initCamera() {
+        const capsDiv = document.getElementById('camera-caps');
+        clearElement(capsDiv);
+        addCapLine(capsDiv, '카메라 접근 요청 중...', true);
+
+        try {
+            videoStream = await navigator.mediaDevices.getUserMedia({
+                video: {
+                    facingMode: 'user',
+                    width: { ideal: 1280 },
+                    height: { ideal: 720 },
+                    frameRate: { ideal: 30 },
+                },
+                audio: false,
+            });
+
+            videoTrack = videoStream.getVideoTracks()[0];
+            const settings = videoTrack.getSettings();
+
+            clearElement(capsDiv);
+            let capabilities = {};
+
+            if (typeof videoTrack.getCapabilities === 'function') {
+                capabilities = videoTrack.getCapabilities();
+                cameraCapabilities = capabilities;
+
+                // AE support
+                const hasAE = capabilities.exposureMode &&
+                              capabilities.exposureMode.includes('manual');
+                addCapLine(capsDiv,
+                    'AE Lock: ' + (hasAE ? '\u2713 지원' : '\u2717 미지원 (짧은 flash로 보정)'),
+                    hasAE);
+
+                // AWB support
+                const hasAWB = capabilities.whiteBalanceMode &&
+                               capabilities.whiteBalanceMode.includes('manual');
+                addCapLine(capsDiv,
+                    'AWB Lock: ' + (hasAWB ? '\u2713 지원' : '\u2717 미지원 (delta 기반 보정)'),
+                    hasAWB);
+
+                addCapLine(capsDiv, '해상도: ' + settings.width + '\u00d7' + settings.height, true);
+                addCapLine(capsDiv, 'FPS: ' + settings.frameRate, true);
+
+                // Exposure compensation
+                const hasEC = capabilities.exposureCompensation;
+                if (hasEC) {
+                    addCapLine(capsDiv,
+                        '노출 보정: \u2713 (' + hasEC.min + ' ~ ' + hasEC.max + ')', true);
+                }
+            } else {
+                addCapLine(capsDiv, '상세 카메라 제어: \u2717 (브라우저 미지원)', false);
+                addCapLine(capsDiv, '해상도: ' + settings.width + '\u00d7' + settings.height, true);
+            }
+
+            // ImageCapture API
+            if (typeof ImageCapture !== 'undefined') {
+                imageCapture = new ImageCapture(videoTrack);
+                addCapLine(capsDiv, 'ImageCapture API: \u2713', true);
+            } else {
+                addCapLine(capsDiv, 'ImageCapture API: \u2717 (Canvas fallback)', false);
+            }
+
+            document.getElementById('btn-start').disabled = false;
+            document.getElementById('btn-start').textContent = '수집 시작';
+
+        } catch (err) {
+            clearElement(capsDiv);
+            addCapLine(capsDiv, '카메라 오류: ' + err.message, false);
+            console.error('Camera init failed:', err);
+        }
+    }
+
+    // --- AE/AWB Lock ---
+
+    async function lockAEAWB() {
+        if (!videoTrack) return;
+
+        const constraints = {};
+        const caps = cameraCapabilities;
+
+        if (caps.exposureMode && caps.exposureMode.includes('manual')) {
+            constraints.exposureMode = 'manual';
+            aeLocked = true;
+        } else if (caps.exposureMode && caps.exposureMode.includes('continuous')) {
+            constraints.exposureMode = 'continuous';
+        }
+
+        if (caps.whiteBalanceMode && caps.whiteBalanceMode.includes('manual')) {
+            constraints.whiteBalanceMode = 'manual';
+            awbLocked = true;
+        }
+
+        if (Object.keys(constraints).length > 0) {
+            try {
+                await videoTrack.applyConstraints({ advanced: [constraints] });
+            } catch (e) {
+                console.warn('Could not apply AE/AWB constraints:', e);
+                aeLocked = false;
+                awbLocked = false;
+            }
+        }
+
+        updateAEAWBIndicator();
+    }
+
+    async function unlockAEAWB() {
+        if (!videoTrack) return;
+
+        const constraints = {};
+        const caps = cameraCapabilities;
+
+        if (caps.exposureMode && caps.exposureMode.includes('continuous')) {
+            constraints.exposureMode = 'continuous';
+        }
+        if (caps.whiteBalanceMode && caps.whiteBalanceMode.includes('continuous')) {
+            constraints.whiteBalanceMode = 'continuous';
+        }
+
+        if (Object.keys(constraints).length > 0) {
+            try {
+                await videoTrack.applyConstraints({ advanced: [constraints] });
+            } catch (e) { /* ignore */ }
+        }
+        aeLocked = false;
+        awbLocked = false;
+        updateAEAWBIndicator();
+    }
+
+    function updateAEAWBIndicator() {
+        const el = document.getElementById('ae-awb-status');
+        if (aeLocked && awbLocked) {
+            el.textContent = 'AE/AWB: Locked \u2713';
+            el.className = 'ae-locked';
+        } else if (aeLocked) {
+            el.textContent = 'AE: Locked \u2713 | AWB: Auto';
+            el.className = 'ae-locked';
+        } else {
+            el.textContent = 'AE/AWB: Auto (delta 보정)';
+            el.className = 'ae-auto';
+        }
+    }
+
+    // --- Frame Capture ---
+
+    async function captureFrame() {
+        const timestamp = performance.now();
+
+        if (imageCapture) {
+            try {
+                const bitmap = await imageCapture.grabFrame();
+                const canvas = document.createElement('canvas');
+                canvas.width = bitmap.width;
+                canvas.height = bitmap.height;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(bitmap, 0, 0);
+
+                return {
+                    dataURL: canvas.toDataURL('image/png'),
+                    width: bitmap.width,
+                    height: bitmap.height,
+                    timestamp: timestamp,
+                };
+            } catch (e) {
+                // Fall through to canvas method
+            }
+        }
+
+        // Canvas fallback
+        const video = document.getElementById('camera-video');
+        const canvas = document.createElement('canvas');
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(video, 0, 0);
+
+        return {
+            dataURL: canvas.toDataURL('image/png'),
+            width: canvas.width,
+            height: canvas.height,
+            timestamp: timestamp,
+        };
+    }
+
+    // --- Flash Sequence ---
+
+    function generateChallenge() {
+        const n = flashCount;
+        const selected = [];
+        const available = [...SKIN_COLORS];
+
+        // Always include R, G, B (skin analysis colors)
+        for (let i = 0; i < Math.min(n, 3); i++) {
+            const idx = Math.floor(crypto.getRandomValues(new Uint32Array(1))[0]
+                        / (2**32) * available.length);
+            selected.push(available.splice(idx, 1)[0]);
+        }
+
+        // Fill remaining with random from full palette
+        const extra = ALL_COLORS.filter(c =>
+            !selected.some(s => s[0] === c[0] && s[1] === c[1] && s[2] === c[2])
+        );
+        while (selected.length < n && extra.length > 0) {
+            const idx = Math.floor(crypto.getRandomValues(new Uint32Array(1))[0]
+                        / (2**32) * extra.length);
+            selected.push(extra.splice(idx, 1)[0]);
+        }
+
+        // Generate challenge ID
+        const idBytes = crypto.getRandomValues(new Uint8Array(16));
+        const challengeId = Array.from(idBytes, b => b.toString(16).padStart(2, '0')).join('');
+
+        return {
+            challengeId,
+            frames: [
+                { color: [0, 0, 0], type: 'baseline' },
+                ...selected.map(c => ({ color: c, type: 'flash' })),
+                { color: [255, 255, 255], type: 'calibration' },
+            ],
+        };
+    }
+
+    function showFlash(color) {
+        const overlay = document.getElementById('flash-overlay');
+        overlay.style.display = 'block';
+        overlay.style.backgroundColor = 'rgb(' + color[0] + ',' + color[1] + ',' + color[2] + ')';
+    }
+
+    function hideFlash() {
+        document.getElementById('flash-overlay').style.display = 'none';
+    }
+
+    function sleep(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    // --- Brightness Measurement ---
+
+    function measureBrightness(dataURL) {
+        // Measure average brightness from captured frame (center face region)
+        return new Promise(function(resolve) {
+            var img = new Image();
+            img.onload = function() {
+                var canvas = document.createElement('canvas');
+                // Sample center 40% region (approximate face area)
+                var sampleW = Math.floor(img.width * 0.4);
+                var sampleH = Math.floor(img.height * 0.4);
+                canvas.width = sampleW;
+                canvas.height = sampleH;
+                var ctx = canvas.getContext('2d');
+                var sx = Math.floor((img.width - sampleW) / 2);
+                var sy = Math.floor((img.height - sampleH) / 2);
+                ctx.drawImage(img, sx, sy, sampleW, sampleH, 0, 0, sampleW, sampleH);
+
+                var imageData = ctx.getImageData(0, 0, sampleW, sampleH);
+                var data = imageData.data;
+                var rSum = 0, gSum = 0, bSum = 0;
+                var pixelCount = data.length / 4;
+                for (var i = 0; i < data.length; i += 4) {
+                    rSum += data[i];
+                    gSum += data[i + 1];
+                    bSum += data[i + 2];
+                }
+                resolve({
+                    brightness: (rSum + gSum + bSum) / (3 * pixelCount),
+                    meanR: rSum / pixelCount,
+                    meanG: gSum / pixelCount,
+                    meanB: bSum / pixelCount,
+                });
+            };
+            img.onerror = function() {
+                resolve({ brightness: 0, meanR: 0, meanG: 0, meanB: 0 });
+            };
+            img.src = dataURL;
+        });
+    }
+
+    // --- Single Flash Pass ---
+
+    async function runFlashPass(challenge, passLabel, statusText) {
+        var passFrames = [];
+
+        for (var i = 0; i < challenge.frames.length; i++) {
+            var frameDef = challenge.frames[i];
+
+            // Show flash
+            var flashTime = performance.now();
+            showFlash(frameDef.color);
+
+            // Wait for light to reach face and camera to capture
+            await sleep(flashDuration * 0.4);
+
+            // Capture frame
+            var capture = await captureFrame();
+
+            // Wait remaining flash duration
+            var elapsed = performance.now() - flashTime;
+            var remaining = Math.max(0, flashDuration - elapsed);
+            await sleep(remaining);
+
+            // Hide flash
+            hideFlash();
+
+            // Measure brightness
+            var brightness = await measureBrightness(capture.dataURL);
+
+            passFrames.push({
+                frameId: i,
+                type: frameDef.type,
+                colorRGB: frameDef.color,
+                flashTimestamp: flashTime,
+                captureTimestamp: capture.timestamp,
+                latencyMs: capture.timestamp - flashTime,
+                dataURL: capture.dataURL,
+                width: capture.width,
+                height: capture.height,
+                brightness: brightness.brightness,
+                meanR: brightness.meanR,
+                meanG: brightness.meanG,
+                meanB: brightness.meanB,
+            });
+
+            statusText.textContent = passLabel + ' ' + (i + 1) + '/' + challenge.frames.length;
+
+            // Inter-frame gap
+            await sleep(50);
+        }
+
+        return passFrames;
+    }
+
+    // --- Main Capture Flow ---
+
+    async function startCapture() {
+        var btnCapture = document.getElementById('btn-capture');
+        btnCapture.disabled = true;
+
+        var statusText = document.getElementById('status-text');
+        var challenge = generateChallenge();
+
+        var sessionData = {
+            challengeId: challenge.challengeId,
+            collectType: collectType,
+            aeAnalysisMode: aeAnalysisMode,
+            flashDuration: flashDuration,
+            deviceInfo: getDeviceInfo(),
+            startTime: performance.now(),
+        };
+
+        // === Pass 1: AE/AWB Locked (reflection measurement) ===
+        statusText.textContent = 'AE/AWB 잠금 중...';
+        await lockAEAWB();
+
+        sessionData.aeLocked = aeLocked;
+        sessionData.awbLocked = awbLocked;
+
+        // Pre-flash calibration
+        statusText.textContent = '카메라 안정화 중... (1.5초)';
+        showFlash([128, 128, 128]);
+        await sleep(1500);
+        hideFlash();
+        await sleep(300);
+
+        statusText.textContent = 'Pass 1: AE Locked — Flash 실행 중...';
+        var pass1Label = aeAnalysisMode ? 'Pass 1 (Locked)' : 'Flash';
+        sessionData.frames = await runFlashPass(challenge, pass1Label, statusText);
+
+        await unlockAEAWB();
+
+        // === Pass 2: AE/AWB Auto (response curve) — only if analysis mode ===
+        if (aeAnalysisMode) {
+            statusText.textContent = 'AE/AWB 해제 — 자동 반응 대기 (2초)...';
+            await sleep(2000);  // Let AE/AWB fully settle to auto
+
+            statusText.textContent = 'Pass 2: AE Auto — Flash 실행 중...';
+            sessionData.aeAutoFrames = await runFlashPass(challenge, 'Pass 2 (Auto)', statusText);
+
+            // Build AE response curve: brightness delta between pass1 and pass2
+            sessionData.aeResponseCurve = sessionData.frames.map(function(lockedFrame, idx) {
+                var autoFrame = sessionData.aeAutoFrames[idx];
+                if (!autoFrame) return null;
+                return {
+                    frameId: idx,
+                    colorRGB: lockedFrame.colorRGB,
+                    type: lockedFrame.type,
+                    lockedBrightness: lockedFrame.brightness,
+                    autoBrightness: autoFrame.brightness,
+                    brightnessDelta: autoFrame.brightness - lockedFrame.brightness,
+                    lockedRGB: [lockedFrame.meanR, lockedFrame.meanG, lockedFrame.meanB],
+                    autoRGB: [autoFrame.meanR, autoFrame.meanG, autoFrame.meanB],
+                    rgbDelta: [
+                        autoFrame.meanR - lockedFrame.meanR,
+                        autoFrame.meanG - lockedFrame.meanG,
+                        autoFrame.meanB - lockedFrame.meanB,
+                    ],
+                };
+            }).filter(Boolean);
+
+            // Compute summary statistics
+            var deltas = sessionData.aeResponseCurve.map(function(r) { return r.brightnessDelta; });
+            sessionData.aeResponseSummary = {
+                meanDelta: deltas.reduce(function(a, b) { return a + b; }, 0) / deltas.length,
+                maxDelta: Math.max.apply(null, deltas),
+                minDelta: Math.min.apply(null, deltas),
+                stdDelta: Math.sqrt(
+                    deltas.map(function(d) {
+                        var mean = deltas.reduce(function(a, b) { return a + b; }, 0) / deltas.length;
+                        return (d - mean) * (d - mean);
+                    }).reduce(function(a, b) { return a + b; }, 0) / deltas.length
+                ),
+            };
+        }
+
+        sessionData.endTime = performance.now();
+        sessionData.totalDurationMs = sessionData.endTime - sessionData.startTime;
+
+        // Store session
+        collectedSessions.push(sessionData);
+        currentSessionIdx++;
+
+        document.getElementById('session-info').textContent =
+            '세션 ' + currentSessionIdx + '/' + totalSessions + ' | 유형: ' + collectType;
+
+        var durationInfo = sessionData.totalDurationMs.toFixed(0) + 'ms';
+        if (aeAnalysisMode && sessionData.aeResponseSummary) {
+            durationInfo += ' | AE \u0394=' + sessionData.aeResponseSummary.meanDelta.toFixed(1);
+        }
+        statusText.textContent = '세션 ' + currentSessionIdx + ' 완료 (' + durationInfo + ')';
+
+        btnCapture.disabled = false;
+
+        if (currentSessionIdx >= totalSessions) {
+            statusText.textContent = '모든 세션 수집 완료!';
+            btnCapture.disabled = true;
+            setTimeout(finishCollection, 1000);
+        }
+    }
+
+    function getDeviceInfo() {
+        return {
+            userAgent: navigator.userAgent,
+            platform: navigator.platform,
+            screenWidth: screen.width,
+            screenHeight: screen.height,
+            devicePixelRatio: window.devicePixelRatio,
+            timestamp: new Date().toISOString(),
+        };
+    }
+
+    // --- Data Export ---
+
+    function finishCollection() {
+        if (collectedSessions.length === 0) {
+            alert('수집된 데이터가 없습니다.');
+            return;
+        }
+
+        // Stop camera
+        if (videoStream) {
+            videoStream.getTracks().forEach(function(t) { t.stop(); });
+        }
+
+        // Show download screen
+        document.getElementById('collect-screen').style.display = 'none';
+        document.getElementById('download-screen').style.display = 'flex';
+
+        // Build summary using safe DOM methods
+        const summary = document.getElementById('collection-summary');
+        clearElement(summary);
+
+        const totalFrames = collectedSessions.reduce(function(a, s) {
+            return a + s.frames.length;
+        }, 0);
+        const avgDuration = collectedSessions.reduce(function(a, s) {
+            return a + s.totalDurationMs;
+        }, 0) / collectedSessions.length;
+
+        const firstSession = collectedSessions[0];
+        const firstFrame = firstSession && firstSession.frames[0];
+
+        addSummaryLine(summary, '수집 유형', collectType);
+        addSummaryLine(summary, '세션 수', String(collectedSessions.length));
+        addSummaryLine(summary, '총 프레임', String(totalFrames));
+        addSummaryLine(summary, '평균 세션 시간', avgDuration.toFixed(0) + 'ms');
+        addSummaryLine(summary, 'AE Lock', firstSession.aeLocked ? '\u2713' : '\u2717 (Auto)');
+        addSummaryLine(summary, 'AWB Lock', firstSession.awbLocked ? '\u2713' : '\u2717 (Auto)');
+        addSummaryLine(summary, 'AE/AWB 분석', firstSession.aeAnalysisMode ? '\u2713 (2-pass)' : '\u2717');
+        addSummaryLine(summary, '기기', navigator.platform);
+        if (firstFrame) {
+            addSummaryLine(summary, '해상도', firstFrame.width + '\u00d7' + firstFrame.height);
+        }
+
+        // AE Response summary if analysis mode was used
+        if (firstSession.aeAnalysisMode && firstSession.aeResponseSummary) {
+            var hr = document.createElement('hr');
+            hr.style.cssText = 'border:none;border-top:1px solid #333;margin:8px 0';
+            summary.appendChild(hr);
+
+            var aeHeader = document.createElement('div');
+            aeHeader.style.cssText = 'color:#facc15;font-weight:600;margin-bottom:4px';
+            aeHeader.textContent = 'AE/AWB Response Analysis';
+            summary.appendChild(aeHeader);
+
+            var aeSummary = firstSession.aeResponseSummary;
+            addSummaryLine(summary, 'Mean \u0394brightness', aeSummary.meanDelta.toFixed(2));
+            addSummaryLine(summary, 'Max \u0394brightness', aeSummary.maxDelta.toFixed(2));
+            addSummaryLine(summary, 'Std \u0394brightness', aeSummary.stdDelta.toFixed(2));
+        }
+    }
+
+    async function downloadData() {
+        const btn = document.querySelector('#download-screen .btn-success');
+        btn.textContent = 'ZIP 생성 중...';
+        btn.disabled = true;
+
+        var zip = new JSZip();
+        var typeDir = collectType === 'live' ? 'live' : 'spoof/' + collectType;
+        var dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+
+        // Helper to build frame metadata entry
+        function frameToMeta(f, prefix) {
+            var filename;
+            if (f.type === 'baseline') filename = prefix + 'baseline.png';
+            else if (f.type === 'calibration') filename = prefix + 'calibration.png';
+            else filename = prefix + 'flash_' + String(f.frameId).padStart(3, '0') + '.png';
+
+            return {
+                frameId: f.frameId,
+                type: f.type,
+                colorRGB: f.colorRGB,
+                flashTimestamp: f.flashTimestamp,
+                captureTimestamp: f.captureTimestamp,
+                latencyMs: f.latencyMs,
+                width: f.width,
+                height: f.height,
+                brightness: f.brightness,
+                meanR: f.meanR,
+                meanG: f.meanG,
+                meanB: f.meanB,
+                filename: filename,
+            };
+        }
+
+        for (var i = 0; i < collectedSessions.length; i++) {
+            var session = collectedSessions[i];
+            var sessionDir = typeDir + '/session_' + dateStr + '_' +
+                             String(i + 1).padStart(4, '0');
+
+            // Save metadata (without image data)
+            var metadata = {
+                challengeId: session.challengeId,
+                collectType: session.collectType,
+                aeAnalysisMode: session.aeAnalysisMode,
+                aeLocked: session.aeLocked,
+                awbLocked: session.awbLocked,
+                flashDuration: session.flashDuration,
+                deviceInfo: session.deviceInfo,
+                totalDurationMs: session.totalDurationMs,
+                frames: session.frames.map(function(f) { return frameToMeta(f, ''); }),
+            };
+
+            // Add AE analysis data if present
+            if (session.aeAnalysisMode && session.aeAutoFrames) {
+                metadata.aeAutoFrames = session.aeAutoFrames.map(function(f) {
+                    return frameToMeta(f, 'ae_auto_');
+                });
+                metadata.aeResponseCurve = session.aeResponseCurve;
+                metadata.aeResponseSummary = session.aeResponseSummary;
+            }
+
+            zip.file(sessionDir + '/metadata.json', JSON.stringify(metadata, null, 2));
+
+            // Save Pass 1 frame images (locked)
+            for (var j = 0; j < session.frames.length; j++) {
+                var frame = session.frames[j];
+                var fname;
+                if (frame.type === 'baseline') fname = 'baseline.png';
+                else if (frame.type === 'calibration') fname = 'calibration.png';
+                else fname = 'flash_' + String(frame.frameId).padStart(3, '0') + '.png';
+
+                var base64 = frame.dataURL.split(',')[1];
+                zip.file(sessionDir + '/' + fname, base64, { base64: true });
+            }
+
+            // Save Pass 2 frame images (AE auto) if present
+            if (session.aeAnalysisMode && session.aeAutoFrames) {
+                for (var k = 0; k < session.aeAutoFrames.length; k++) {
+                    var aeFrame = session.aeAutoFrames[k];
+                    var aeFname;
+                    if (aeFrame.type === 'baseline') aeFname = 'ae_auto_baseline.png';
+                    else if (aeFrame.type === 'calibration') aeFname = 'ae_auto_calibration.png';
+                    else aeFname = 'ae_auto_flash_' + String(aeFrame.frameId).padStart(3, '0') + '.png';
+
+                    var aeBase64 = aeFrame.dataURL.split(',')[1];
+                    zip.file(sessionDir + '/' + aeFname, aeBase64, { base64: true });
+                }
+            }
+
+            btn.textContent = 'ZIP 생성 중... ' + (i + 1) + '/' + collectedSessions.length;
+        }
+
+        var blob = await zip.generateAsync({
+            type: 'blob',
+            compression: 'DEFLATE',
+            compressionOptions: { level: 6 },
+        });
+
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = 'afl_data_' + collectType + '_' +
+                     new Date().toISOString().slice(0, 10) + '.zip';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+
+        btn.textContent = '다운로드 완료 \u2713';
+        btn.disabled = false;
+    }
+
+    // --- Screen Transitions ---
+
+    document.getElementById('btn-start').addEventListener('click', function() {
+        collectType = document.getElementById('collect-type').value;
+        flashCount = parseInt(document.getElementById('flash-count').value);
+        flashDuration = parseInt(document.getElementById('flash-duration').value);
+        totalSessions = parseInt(document.getElementById('session-count').value);
+        aeAnalysisMode = document.getElementById('ae-analysis-mode').checked;
+
+        document.getElementById('camera-video').srcObject = videoStream;
+
+        window.scrollTo(0, 0);
+        document.body.classList.add('no-scroll');
+        document.getElementById('setup-screen').style.display = 'none';
+        document.getElementById('collect-screen').style.display = 'block';
+
+        document.getElementById('session-info').textContent =
+            '세션 0/' + totalSessions + ' | 유형: ' + collectType;
+
+        updateAEAWBIndicator();
+    });
+
+    // --- Init ---
+    initCamera();
+    </script>
+</body>
+</html>
