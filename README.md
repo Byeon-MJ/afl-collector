@@ -1,9 +1,23 @@
-# AFL Data Collector — 모바일 실행 가이드
+# FAS Data Collectors — 모바일 실행 가이드
 
 ## 개요
 
-AFL (Adaptive Flash Liveness) 데이터 수집 Web PWA입니다.
-모바일 브라우저에서 직접 실행하며, 화면 flash → 카메라 캡처 → ZIP 다운로드까지 클라이언트에서 완결됩니다.
+Face Anti-Spoofing 데이터 수집 Web PWA 모음입니다.
+모바일 브라우저에서 직접 실행하며, 클라이언트에서 완결됩니다.
+
+| Collector | 파일 | 용도 | URL |
+|-----------|------|------|-----|
+| **AFL** | `index.html` | Flash 반사 패턴 수집 (AE/AWB 분석) | [열기](https://audin1.github.io/afl-collector/) |
+| **PPLD** | `ppld_collector.html` | 원근 시차 (Parallax) 데이터 수집 | [열기](https://audin1.github.io/afl-collector/ppld_collector.html) |
+
+### AFL (Adaptive Flash Liveness)
+화면 flash → 카메라 캡처 → ZIP 다운로드. AE/AWB lock 분석 포함.
+
+### PPLD (Perspective Parallax Liveness Detection)
+얼굴 접근 동작 중 원근 왜곡을 측정하여 3D/2D를 구별합니다.
+- **Tier 1**: Face bbox area growth rate, sub-bbox differential (center vs edge)
+- **Tier 2**: MediaPipe 478-point landmarks — FNUS, CDS (Procrustes), DMS, SOS
+- 실시간 HUD 오버레이 + 접근 가이드 + 자동 종료 + ZIP 다운로드
 
 ---
 
