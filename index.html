@@ -136,14 +136,15 @@
         }
         .btn-row { display: flex; gap: 10px; }
 
-        /* --- Flash Overlay (full screen) --- */
+        /* --- Flash Overlay (video-container scoped) --- */
         #flash-overlay {
             display: none;
-            position: fixed;
+            position: absolute;
             top: 0; left: 0;
-            width: 100vw;
-            height: 100vh;
-            z-index: 1000;
+            width: 100%;
+            height: 100%;
+            z-index: 50;
+            pointer-events: none;
         }
 
         /* --- AE/AWB indicator --- */
@@ -189,10 +190,6 @@
         <h1>AFL Data Collector</h1>
         <p class="subtitle">Active Flash Liveness — 모바일 데이터 수집</p>
 
-        <div style="margin-bottom:20px;">
-            <a href="ppld_collector.html" style="color:#4fc3f7; text-decoration:none; font-size:0.85em; border:1px solid #4fc3f7; padding:6px 14px; border-radius:20px;">PPLD Collector (Parallax) &rarr;</a>
-        </div>
-
         <div class="option-group">
             <label>수집 유형</label>
             <select id="collect-type">
@@ -220,6 +217,27 @@
                 <option value="200">200ms (밝은 반사)</option>
                 <option value="300">300ms (최대 신호)</option>
             </select>
+        </div>
+
+        <div class="option-group">
+            <label>Flash 강도 (Alpha)</label>
+            <select id="flash-alpha-mode">
+                <option value="auto">자동 (Ambient 기반)</option>
+                <option value="T1">T1: Invisible (α=0.04) — 프로덕션</option>
+                <option value="T2" selected>T2: Subtle (α=0.10) — 프로덕션 기본</option>
+                <option value="T3">T3: Moderate (α=0.20) — 밝은 환경</option>
+                <option value="T4">T4: Strong (α=1.00) — 시험 전용</option>
+                <option value="custom">사용자 지정</option>
+            </select>
+        </div>
+
+        <div class="option-group" id="custom-alpha-group" style="display:none;">
+            <label>Alpha 값 (0.01 ~ 1.00)</label>
+            <input type="range" id="custom-alpha" min="0.01" max="1.00" step="0.01" value="0.10"
+                   oninput="document.getElementById('alpha-display').textContent = this.value">
+            <div style="text-align:center;color:#4ade80;font-size:0.9em;margin-top:4px;">
+                α = <span id="alpha-display">0.10</span>
+            </div>
         </div>
 
         <div class="option-group">
@@ -254,6 +272,7 @@
             <div id="face-overlay">
                 <div id="face-guide"></div>
             </div>
+            <div id="flash-overlay"></div>
             <div id="ae-awb-status" class="ae-auto">AE/AWB: 확인 중</div>
         </div>
 
@@ -271,9 +290,6 @@
             </div>
         </div>
     </div>
-
-    <!-- Flash Overlay -->
-    <div id="flash-overlay"></div>
 
     <!-- Download Screen -->
     <div id="download-screen">
@@ -328,6 +344,16 @@
     let flashCount = 4;
     let flashDuration = 150;
     let aeAnalysisMode = false;
+    let flashAlphaMode = 'T2';
+    let flashAlpha = 0.10;  // current effective alpha
+    let ambientBrightness = null;  // measured before flash sequence
+
+    const ALPHA_TIERS = {
+        T1: { alpha: 0.04, name: 'Invisible' },
+        T2: { alpha: 0.10, name: 'Subtle' },
+        T3: { alpha: 0.20, name: 'Moderate' },
+        T4: { alpha: 1.00, name: 'Strong' },
+    };
 
     // Perceptually distinct colors for skin reflection analysis
     const SKIN_COLORS = [
@@ -567,10 +593,15 @@
         };
     }
 
-    function showFlash(color) {
+    function showFlash(color, alpha) {
+        if (alpha === undefined) alpha = flashAlpha;
         const overlay = document.getElementById('flash-overlay');
         overlay.style.display = 'block';
-        overlay.style.backgroundColor = 'rgb(' + color[0] + ',' + color[1] + ',' + color[2] + ')';
+        if (alpha >= 1.0) {
+            overlay.style.backgroundColor = 'rgb(' + color[0] + ',' + color[1] + ',' + color[2] + ')';
+        } else {
+            overlay.style.backgroundColor = 'rgba(' + color[0] + ',' + color[1] + ',' + color[2] + ',' + alpha + ')';
+        }
     }
 
     function hideFlash() {
@@ -622,10 +653,53 @@
         });
     }
 
+    // --- Ambient Measurement ---
+
+    async function measureAmbientAndSetAlpha() {
+        // Capture 3 frames without any flash to measure ambient light
+        var measurements = [];
+        for (var i = 0; i < 3; i++) {
+            var capture = await captureFrame();
+            var brightness = await measureBrightness(capture.dataURL);
+            measurements.push(brightness);
+            await sleep(100);
+        }
+
+        // Average the measurements
+        var avgBrightness = measurements.reduce(function(s, m) { return s + m.brightness; }, 0) / measurements.length;
+        ambientBrightness = avgBrightness;
+
+        // If auto mode, determine alpha from ambient brightness
+        if (flashAlphaMode === 'auto') {
+            if (avgBrightness < 40) {
+                flashAlpha = 0.04;  // Dark room
+            } else if (avgBrightness < 80) {
+                flashAlpha = 0.06;  // Dim indoor
+            } else if (avgBrightness < 140) {
+                flashAlpha = 0.10;  // Office
+            } else if (avgBrightness < 200) {
+                flashAlpha = 0.16;  // Bright indoor
+            } else {
+                flashAlpha = 0.25;  // Very bright / outdoor
+            }
+        }
+
+        return {
+            avgBrightness: avgBrightness,
+            measurements: measurements,
+            selectedAlpha: flashAlpha,
+            mode: flashAlphaMode,
+        };
+    }
+
     // --- Single Flash Pass ---
 
     async function runFlashPass(challenge, passLabel, statusText) {
         var passFrames = [];
+        // Calculate how many frames we can capture per flash
+        // At 30fps, one frame every ~33ms. Leave 40ms initial delay for light to reach face.
+        var framesPerFlash = Math.max(1, Math.floor((flashDuration - 40) / 33));
+        framesPerFlash = Math.min(framesPerFlash, 4);  // cap at 4 frames
 
         for (var i = 0; i < challenge.frames.length; i++) {
             var frameDef = challenge.frames[i];
@@ -635,10 +709,28 @@
             showFlash(frameDef.color);
 
             // Wait for light to reach face and camera to capture
-            await sleep(flashDuration * 0.4);
+            await sleep(40);
 
-            // Capture frame
-            var capture = await captureFrame();
+            // Capture multiple frames during flash
+            var multiCaptures = [];
+            for (var fc = 0; fc < framesPerFlash; fc++) {
+                var capture = await captureFrame();
+                var brightness = await measureBrightness(capture.dataURL);
+                multiCaptures.push({
+                    captureIndex: fc,
+                    captureTimestamp: capture.timestamp,
+                    latencyMs: capture.timestamp - flashTime,
+                    dataURL: capture.dataURL,
+                    width: capture.width,
+                    height: capture.height,
+                    brightness: brightness.brightness,
+                    meanR: brightness.meanR,
+                    meanG: brightness.meanG,
+                    meanB: brightness.meanB,
+                });
+                // Small delay between multi-frame captures
+                if (fc < framesPerFlash - 1) await sleep(10);
+            }
 
             // Wait remaining flash duration
             var elapsed = performance.now() - flashTime;
@@ -648,23 +740,37 @@
             // Hide flash
             hideFlash();
 
-            // Measure brightness
-            var brightness = await measureBrightness(capture.dataURL);
+            // Use the middle capture as the "primary" (best settled)
+            var primaryIdx = Math.floor(multiCaptures.length / 2);
+            var primary = multiCaptures[primaryIdx];
+
+            // Compute averaged brightness across all captures
+            var avgBrightness = multiCaptures.reduce(function(s, c) { return s + c.brightness; }, 0) / multiCaptures.length;
+            var avgR = multiCaptures.reduce(function(s, c) { return s + c.meanR; }, 0) / multiCaptures.length;
+            var avgG = multiCaptures.reduce(function(s, c) { return s + c.meanG; }, 0) / multiCaptures.length;
+            var avgB = multiCaptures.reduce(function(s, c) { return s + c.meanB; }, 0) / multiCaptures.length;
 
             passFrames.push({
                 frameId: i,
                 type: frameDef.type,
                 colorRGB: frameDef.color,
+                flashAlpha: flashAlpha,
                 flashTimestamp: flashTime,
-                captureTimestamp: capture.timestamp,
-                latencyMs: capture.timestamp - flashTime,
-                dataURL: capture.dataURL,
-                width: capture.width,
-                height: capture.height,
-                brightness: brightness.brightness,
-                meanR: brightness.meanR,
-                meanG: brightness.meanG,
-                meanB: brightness.meanB,
+                captureTimestamp: primary.captureTimestamp,
+                latencyMs: primary.latencyMs,
+                dataURL: primary.dataURL,
+                width: primary.width,
+                height: primary.height,
+                brightness: avgBrightness,
+                meanR: avgR,
+                meanG: avgG,
+                meanB: avgB,
+                framesPerFlash: framesPerFlash,
+                multiFrameBrightness: multiCaptures.map(function(c) {
+                    return { brightness: c.brightness, meanR: c.meanR, meanG: c.meanG, meanB: c.meanB, latencyMs: c.latencyMs };
+                }),
+                // Store all capture dataURLs for multi-frame analysis
+                multiFrameDataURLs: multiCaptures.map(function(c) { return c.dataURL; }),
             });
 
             statusText.textContent = passLabel + ' ' + (i + 1) + '/' + challenge.frames.length;
@@ -690,9 +796,20 @@
             collectType: collectType,
             aeAnalysisMode: aeAnalysisMode,
             flashDuration: flashDuration,
+            flashAlphaMode: flashAlphaMode,
+            flashAlpha: flashAlpha,
             deviceInfo: getDeviceInfo(),
             startTime: performance.now(),
         };
+
+        // === Ambient Measurement ===
+        statusText.textContent = '주변광 측정 중...';
+        var ambientResult = await measureAmbientAndSetAlpha();
+        sessionData.ambientMeasurement = ambientResult;
+        sessionData.flashAlpha = flashAlpha;
+
+        statusText.textContent = '주변광: ' + ambientResult.avgBrightness.toFixed(0) + ' → α=' + flashAlpha.toFixed(2);
+        await sleep(800);  // Show the result briefly
 
         // === Pass 1: AE/AWB Locked (reflection measurement) ===
         statusText.textContent = 'AE/AWB 잠금 중...';
@@ -703,7 +820,7 @@
 
         // Pre-flash calibration
         statusText.textContent = '카메라 안정화 중... (1.5초)';
-        showFlash([128, 128, 128]);
+        showFlash([128, 128, 128], Math.min(flashAlpha * 3, 1.0));
         await sleep(1500);
         hideFlash();
         await sleep(300);
@@ -832,6 +949,11 @@
         addSummaryLine(summary, 'AE Lock', firstSession.aeLocked ? '\u2713' : '\u2717 (Auto)');
         addSummaryLine(summary, 'AWB Lock', firstSession.awbLocked ? '\u2713' : '\u2717 (Auto)');
         addSummaryLine(summary, 'AE/AWB 분석', firstSession.aeAnalysisMode ? '\u2713 (2-pass)' : '\u2717');
+        addSummaryLine(summary, 'Flash Alpha', firstSession.flashAlpha.toFixed(2) + ' (' + firstSession.flashAlphaMode + ')');
+        if (firstSession.ambientMeasurement) {
+            addSummaryLine(summary, '주변광 밝기', firstSession.ambientMeasurement.avgBrightness.toFixed(1));
+        }
+        addSummaryLine(summary, '멀티프레임', String(firstSession.frames[0] && firstSession.frames[0].framesPerFlash || 1) + ' frames/flash');
         addSummaryLine(summary, '기기', navigator.platform);
         if (firstFrame) {
             addSummaryLine(summary, '해상도', firstFrame.width + '\u00d7' + firstFrame.height);
@@ -884,6 +1006,9 @@
                 meanR: f.meanR,
                 meanG: f.meanG,
                 meanB: f.meanB,
+                flashAlpha: f.flashAlpha,
+                framesPerFlash: f.framesPerFlash,
+                multiFrameBrightness: f.multiFrameBrightness,
                 filename: filename,
             };
         }
@@ -927,6 +1052,19 @@
 
                 var base64 = frame.dataURL.split(',')[1];
                 zip.file(sessionDir + '/' + fname, base64, { base64: true });
+
+                // Save multi-frame captures
+                if (frame.multiFrameDataURLs && frame.multiFrameDataURLs.length > 1) {
+                    for (var mf = 0; mf < frame.multiFrameDataURLs.length; mf++) {
+                        var mfBase;
+                        if (frame.type === 'baseline') mfBase = 'baseline';
+                        else if (frame.type === 'calibration') mfBase = 'calibration';
+                        else mfBase = 'flash_' + String(frame.frameId).padStart(3, '0');
+                        var mfName = 'multiframe/' + mfBase + '_f' + mf + '.png';
+                        var mfB64 = frame.multiFrameDataURLs[mf].split(',')[1];
+                        zip.file(sessionDir + '/' + mfName, mfB64, { base64: true });
+                    }
+                }
             }
 
             // Save Pass 2 frame images (AE auto) if present
@@ -940,6 +1078,19 @@
 
                     var aeBase64 = aeFrame.dataURL.split(',')[1];
                     zip.file(sessionDir + '/' + aeFname, aeBase64, { base64: true });
+
+                    // Save Pass 2 multi-frame captures
+                    if (aeFrame.multiFrameDataURLs && aeFrame.multiFrameDataURLs.length > 1) {
+                        for (var mf2 = 0; mf2 < aeFrame.multiFrameDataURLs.length; mf2++) {
+                            var mf2Base;
+                            if (aeFrame.type === 'baseline') mf2Base = 'ae_auto_baseline';
+                            else if (aeFrame.type === 'calibration') mf2Base = 'ae_auto_calibration';
+                            else mf2Base = 'ae_auto_flash_' + String(aeFrame.frameId).padStart(3, '0');
+                            var mf2Name = 'multiframe/' + mf2Base + '_f' + mf2 + '.png';
+                            var mf2B64 = aeFrame.multiFrameDataURLs[mf2].split(',')[1];
+                            zip.file(sessionDir + '/' + mf2Name, mf2B64, { base64: true });
+                        }
+                    }
                 }
             }
 
@@ -968,12 +1119,25 @@
 
     // --- Screen Transitions ---
 
+    document.getElementById('flash-alpha-mode').addEventListener('change', function() {
+        document.getElementById('custom-alpha-group').style.display =
+            this.value === 'custom' ? 'block' : 'none';
+    });
+
     document.getElementById('btn-start').addEventListener('click', function() {
         collectType = document.getElementById('collect-type').value;
         flashCount = parseInt(document.getElementById('flash-count').value);
         flashDuration = parseInt(document.getElementById('flash-duration').value);
         totalSessions = parseInt(document.getElementById('session-count').value);
         aeAnalysisMode = document.getElementById('ae-analysis-mode').checked;
+        flashAlphaMode = document.getElementById('flash-alpha-mode').value;
+        if (flashAlphaMode === 'custom') {
+            flashAlpha = parseFloat(document.getElementById('custom-alpha').value);
+        } else if (flashAlphaMode === 'auto') {
+            flashAlpha = 0.10;  // default, will be overridden by ambient measurement
+        } else {
+            flashAlpha = ALPHA_TIERS[flashAlphaMode].alpha;
+        }
 
         document.getElementById('camera-video').srcObject = videoStream;
 
